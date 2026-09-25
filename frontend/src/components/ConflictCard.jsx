@@ -29,7 +29,9 @@ function ItemView({ item, kind, highlight = [], mark }) {
   )
 }
 
-export default function ConflictCard({ conflict, index, value, onChange }) {
+export default function ConflictCard({
+  conflict, index, value, onChange, invalid = false, errorMessage = '',
+}) {
   const isInterval = conflict.conflictType === 'interval'
   const kindLabel = conflict.kind === 'segments' ? '片段' : '校注'
 
@@ -41,7 +43,11 @@ export default function ConflictCard({ conflict, index, value, onChange }) {
   const fieldChoices = value?.fields || {}
 
   return (
-    <div className={`conflict-card ${value ? 'resolved' : 'unresolved'}`}>
+    <div
+      className={`conflict-card ${
+        value ? (invalid ? 'invalid' : 'resolved') : 'unresolved'
+      }`}
+    >
       <div className="conflict-head">
         <span className="conflict-index">#{index + 1}</span>
         <strong>
@@ -51,10 +57,17 @@ export default function ConflictCard({ conflict, index, value, onChange }) {
               ? `${kindLabel}修改/删除冲突`
               : `${kindLabel}字段冲突`}
         </strong>
-        <span className={`conflict-status ${value ? 'ok-text' : 'warn-text'}`}>
-          {value ? '已裁决' : '待裁决'}
+        <span
+          className={`conflict-status ${
+            !value ? 'warn-text' : invalid ? 'err-text' : 'ok-text'
+          }`}
+        >
+          {!value ? '待裁决' : invalid ? '裁决无效' : '已裁决'}
         </span>
       </div>
+      {invalid && errorMessage && (
+        <div className="conflict-error">✗ {errorMessage}</div>
+      )}
 
       {isInterval ? (
         <IntervalSides conflict={conflict} />

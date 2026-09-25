@@ -125,6 +125,7 @@ input:focus, select:focus, textarea:focus {
 .badge.warn { background: #fdf0d9; color: var(--warn); }
 .ok-text { color: var(--ok); }
 .warn-text { color: var(--warn); }
+.err-text { color: var(--danger); }
 .empty-hint { color: var(--muted); padding: 18px; text-align: center; }
 
 code {
@@ -269,6 +270,11 @@ code {
   border-radius: 8px; padding: 14px 16px; margin-bottom: 12px;
 }
 .conflict-card.resolved { border-left-color: var(--ok); background: #fbfefc; }
+.conflict-card.invalid { border-left-color: var(--danger); background: #fdf6f5; }
+.conflict-error {
+  background: #fdeeec; border: 1px solid #ecc8c3; color: #8f2f2f;
+  padding: 6px 10px; border-radius: 6px; font-size: 13px; margin-bottom: 10px;
+}
 .conflict-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .conflict-index {
   background: #1d2c4d; color: #fff; border-radius: 50%;

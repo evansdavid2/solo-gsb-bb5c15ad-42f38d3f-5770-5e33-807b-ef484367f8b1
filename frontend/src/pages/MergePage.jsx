@@ -40,10 +40,27 @@ export default function MergePage() {
   const [saveName, setSaveName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [savedLabel, setSavedLabel] = useState('')
 
   useEffect(() => {
     api.listProjects().then(setProjects).catch(() => {})
   }, [])
+
+  const describeRejection = (e) => {
+    const d = e?.detail
+    if (e?.status !== 409 || !d || typeof d !== 'object') return null
+    const lines = []
+    if (d.unresolved?.length) {
+      lines.push(`未裁决冲突 ${d.unresolved.length} 项：${d.unresolved.join('、')}`)
+    }
+    if (d.errors?.length) {
+      lines.push(`无效裁决 ${d.errors.length} 项：` +
+        d.errors.map((x) => `${x.conflictId}（${x.message}）`).join('；'))
+    }
+    return lines.length
+      ? `${d.message || '存在未裁决冲突或无效裁决，未保存'}\n${lines.join('\n')}`
+      : null
+  }
 
   const pickBaseProject = async (pid) => {
     setBaseProjectId(pid)
@@ -82,7 +99,7 @@ export default function MergePage() {
 
   const runMerge = async (extraResolutions = undefined, persist = false) => {
     if (!canMerge) return
-    setBusy(true); setError('')
+    setBusy(true); setError(''); setSavedLabel('')
     try {
       const payload = {
         base: baseDoc,
@@ -97,11 +114,18 @@ export default function MergePage() {
       setResult(r)
       if (r.savedProject) {
         setSaveName('')
+        setSavedLabel(`已另存为新项目「${r.savedProject.name}」`)
         api.listProjects().then(setProjects)
       }
       return r
     } catch (e) {
-      setError(e.message)
+      if (e.status === 409 && e.detail && 'unresolved' in e.detail) {
+        // Save was refused: keep the latest preview (conflicts + errors stay
+        // visible) so the user can fix the adjudication and retry.
+        setError(describeRejection(e))
+      } else {
+        setError(e.message)
+      }
     } finally {
       setBusy(false)
     }
@@ -124,10 +148,19 @@ export default function MergePage() {
     applyResolutions(next)
   }
 
+  // The server is authoritative: a conflict with a present resolution that
+  // fails validation is neither "resolved" nor savable (it shows in
+  // result.errors), so mere presence in `resolutions` is not enough.
+  const invalidIds = useMemo(
+    () => new Set((result?.errors || []).map((e) => e.conflictId)),
+    [result],
+  )
   const resolvedCount = result
-    ? result.conflicts.filter((c) => resolutions[c.id]).length
+    ? result.conflicts.filter((c) => resolutions[c.id] && !invalidIds.has(c.id)).length
     : 0
-  const allResolved = result && resolvedCount === result.conflicts.length
+  const allResolved = !!result
+    && result.unresolved.length === 0
+    && result.errors.length === 0
 
   const exportResult = () => {
     if (!result) return
@@ -145,7 +178,7 @@ export default function MergePage() {
 
   const writeBack = async () => {
     if (!baseProjectId || !allResolved) return
-    setBusy(true); setError('')
+    setBusy(true); setError(''); setSavedLabel('')
     try {
       const r = await api.merge({
         projectId: baseProjectId,
@@ -155,9 +188,14 @@ export default function MergePage() {
       })
       setResult(r)
       setError('')
-      alert(`已写回项目（${r.savedProject?.name || ''}）`)
+      // report only what the server actually persisted
+      if (r.savedProject) {
+        setSavedLabel(`已写回基准项目「${r.savedProject.name}」`)
+      }
     } catch (e) {
-      setError(e.message)
+      // 409 with unresolved/errors: refuse to write back; the base document
+      // stays unchanged. The live preview already lists the same problems.
+      setError(describeRejection(e) || e.message)
     } finally {
       setBusy(false)
     }
@@ -168,7 +206,9 @@ export default function MergePage() {
       <div className="page-head">
         <h2>三方合并（离线副本 A / B 对共同基准）</h2>
       </div>
-      {error && <div className="error">{error}</div>}
+      {error && (
+        <div className="error" style={{ whiteSpace: 'pre-line' }}>{error}</div>
+      )}
 
       <div className="merge-sources">
         <SourceCard
@@ -216,6 +256,7 @@ export default function MergePage() {
         <MergeResult
           result={result}
           resolutions={resolutions}
+          invalidIds={invalidIds}
           resolvedCount={resolvedCount}
           allResolved={!!allResolved}
           setResolution={setResolution}
@@ -227,6 +268,7 @@ export default function MergePage() {
           canWriteBack={!!baseProjectId}
           writeBack={writeBack}
           busy={busy}
+          savedLabel={savedLabel}
         />
       )}
     </div>
@@ -265,11 +307,15 @@ function DocSummary({ doc }) {
 }
 
 function MergeResult({
-  result, resolutions, resolvedCount, allResolved, setResolution,
+  result, resolutions, invalidIds, resolvedCount, allResolved, setResolution,
   exportResult, saveName, setSaveName, runMerge, bulkChoose,
-  canWriteBack, writeBack, busy,
+  canWriteBack, writeBack, busy, savedLabel,
 }) {
   const { stats, conflicts, changes, document: merged } = result
+  const unresolvedIds = new Set(result.unresolved || [])
+  const pendingCount = conflicts.filter(
+    (c) => !resolutions[c.id] || unresolvedIds.has(c.id) || invalidIds.has(c.id),
+  ).length
 
   const autoGroups = useMemo(() => {
     const groups = {}
@@ -298,7 +344,12 @@ function MergeResult({
             <strong>冲突</strong>
             <span>{conflicts.length} 项</span>
             <span>已裁决 {resolvedCount}</span>
-            <span>{allResolved ? '✓ 全部解决' : `待裁决 ${conflicts.length - resolvedCount}`}</span>
+            {result.errors?.length > 0 && <span>裁决有误 {result.errors.length}</span>}
+            <span>
+              {allResolved
+                ? '✓ 全部解决'
+                : `待处理 ${pendingCount}`}
+            </span>
           </div>
         </div>
       </div>
@@ -332,7 +383,8 @@ function MergeResult({
       {conflicts.length > 0 && (
         <div className="conflicts-section">
           <h3>
-            需要逐项裁决的冲突（{resolvedCount}/{conflicts.length}）
+            需要逐项裁决的冲突（{resolvedCount}/{conflicts.length}
+            {result.errors?.length > 0 ? `，${result.errors.length} 项裁决无效` : ''}）
           </h3>
           <div className="conflict-bulk">
             <button className="btn small" onClick={() => bulkChoose('a')}>
@@ -342,21 +394,26 @@ function MergeResult({
               未裁决项全部取 B
             </button>
           </div>
-          {conflicts.map((c, i) => (
-            <ConflictCard
-              key={c.id}
-              conflict={c}
-              index={i}
-              value={resolutions[c.id] || null}
-              onChange={(res) => setResolution(c.id, res)}
-            />
-          ))}
+          {conflicts.map((c, i) => {
+            const err = result.errors?.find((e) => e.conflictId === c.id)
+            return (
+              <ConflictCard
+                key={c.id}
+                conflict={c}
+                index={i}
+                value={resolutions[c.id] || null}
+                invalid={invalidIds.has(c.id)}
+                errorMessage={err?.message || ''}
+                onChange={(res) => setResolution(c.id, res)}
+              />
+            )
+          })}
         </div>
       )}
 
       {result.errors?.length > 0 && (
         <div className="error">
-          裁决有误：
+          以下裁决无效（冲突条目暂未进入合并文档，修正后可重新预览与保存）：
           <ul>
             {result.errors.map((e) => (
               <li key={e.conflictId}>{e.conflictId}: {e.message}</li>
@@ -372,8 +429,19 @@ function MergeResult({
         </h3>
         {!allResolved && (
           <div className="warn-box">
-            尚有 {conflicts.length - resolvedCount} 项冲突未裁决；
-            这些条目当前不会出现在合并文档中。
+            {result.unresolved.length > 0 && (
+              <div>
+                尚有 {result.unresolved.length} 项冲突未裁决；这些条目当前不会
+                出现在合并文档中。
+              </div>
+            )}
+            {result.errors?.length > 0 && (
+              <div>
+                另有 {result.errors.length} 项裁决无效，对应条目也不会出现在
+                合并文档中；请修正后重新预览。
+              </div>
+            )}
+            <div>存在未裁决或无效裁决时无法保存（另存 / 写回均会被服务端拒绝）。</div>
           </div>
         )}
         <div className="final-actions">
@@ -389,25 +457,30 @@ function MergeResult({
             <button
               className="btn primary"
               disabled={!allResolved || !saveName.trim() || busy}
+              title={!allResolved ? '需要全部冲突裁决有效后才能另存' : ''}
               onClick={() => runMerge(true)}
             >
-              全部裁决后另存为新项目
+              全部裁决有效后另存为新项目
             </button>
           </div>
           {canWriteBack && (
             <button
               className="btn"
               disabled={!allResolved || busy}
+              title={
+                allResolved
+                  ? '以合并结果覆盖基准项目的当前文档'
+                  : '需要全部冲突裁决有效后才能写回'
+              }
               onClick={writeBack}
-              title="以合并结果覆盖基准项目的当前文档"
             >
-              全部裁决后写回基准项目
+              全部裁决有效后写回基准项目
             </button>
           )}
         </div>
         {result.savedProject && (
           <div className="ok">
-            已保存为项目：
+            {savedLabel || '已保存为项目'}：
             <Link to={`/projects/${result.savedProject.id}`}>
               {result.savedProject.name}
             </Link>

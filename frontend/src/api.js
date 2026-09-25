@@ -11,8 +11,12 @@ async function request(path, options = {}) {
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
-    const err = new Error((data && data.detail) || `请求失败 (${res.status})`);
+    const message = data && typeof data.detail === 'object' && data.detail !== null
+      ? (data.detail.message || `请求失败 (${res.status})`)
+      : ((data && data.detail) || `请求失败 (${res.status})`);
+    const err = new Error(message);
     err.status = res.status;
+    err.detail = data && data.detail;
     throw err;
   }
   return data;
