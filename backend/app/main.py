@@ -644,11 +644,26 @@ def merge(payload: MergeRequest) -> dict:
 
     result = merge_documents(base, _doc(payload.a), _doc(payload.b), resolutions)
 
-    if payload.saveAsProject:
-        created = db.create_project(payload.saveAsProject.strip(),
-                                    result["document"])
+    # Persisting is only allowed for a clean merge: unresolved conflicts and
+    # invalid adjudications silently drop items from the merged document, so
+    # a save-as / write-back request carrying either is rejected with 409 —
+    # no project is created and the base document is left untouched.
+    save_as = (payload.saveAsProject or "").strip()
+    if (save_as or payload.projectId) and (
+            result["unresolved"] or result["errors"]):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "存在未裁决的冲突或未通过校验的裁决，未保存任何内容",
+                "unresolved": result["unresolved"],
+                "errors": result["errors"],
+            },
+        )
+
+    if save_as:
+        created = db.create_project(save_as, result["document"])
         result["savedProject"] = {"id": created["id"], "name": created["name"]}
-    elif payload.projectId and not result["unresolved"] and not result["errors"]:
+    elif payload.projectId:
         # fully resolved merge writes back to the base project
         project = db.update_project(payload.projectId, None, result["document"])
         result["savedProject"] = {"id": project["id"], "name": project["name"]}

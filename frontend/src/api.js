@@ -11,8 +11,15 @@ async function request(path, options = {}) {
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
-    const err = new Error((data && data.detail) || `请求失败 (${res.status})`);
+    const detail = data && data.detail;
+    // detail may be a structured object (e.g. merge 409 carries the
+    // unresolved / invalid adjudication lists) rather than a plain string
+    const message = typeof detail === 'string'
+      ? detail
+      : (detail && detail.message) || `请求失败 (${res.status})`;
+    const err = new Error(message);
     err.status = res.status;
+    err.detail = detail;
     throw err;
   }
   return data;

@@ -80,6 +80,19 @@ export default function MergePage() {
 
   const canMerge = baseDoc && a?.doc && b?.doc
 
+  // A 409 from a save attempt carries the server's authoritative problem
+  // lists; reflect them in the displayed result so the page shows exactly
+  // what blocked the save.
+  const syncSaveProblems = (e) => {
+    const d = e.detail
+    if (e.status !== 409 || !d || typeof d !== 'object') return
+    setResult((prev) => prev && {
+      ...prev,
+      unresolved: d.unresolved ?? prev.unresolved,
+      errors: d.errors ?? prev.errors,
+    })
+  }
+
   const runMerge = async (extraResolutions = undefined, persist = false) => {
     if (!canMerge) return
     setBusy(true); setError('')
@@ -101,6 +114,7 @@ export default function MergePage() {
       }
       return r
     } catch (e) {
+      syncSaveProblems(e)
       setError(e.message)
     } finally {
       setBusy(false)
@@ -128,6 +142,11 @@ export default function MergePage() {
     ? result.conflicts.filter((c) => resolutions[c.id]).length
     : 0
   const allResolved = result && resolvedCount === result.conflicts.length
+  // a resolution exists but failed server-side validation (e.g. empty time
+  // in a custom value) -> the item is dropped from the merged document,
+  // so saving must stay blocked until the adjudication is fixed
+  const errorCount = result?.errors?.length || 0
+  const canSave = !!allResolved && errorCount === 0
 
   const exportResult = () => {
     if (!result) return
@@ -144,7 +163,7 @@ export default function MergePage() {
   }
 
   const writeBack = async () => {
-    if (!baseProjectId || !allResolved) return
+    if (!baseProjectId || !canSave) return
     setBusy(true); setError('')
     try {
       const r = await api.merge({
@@ -154,9 +173,14 @@ export default function MergePage() {
         resolutions,
       })
       setResult(r)
-      setError('')
-      alert(`已写回项目（${r.savedProject?.name || ''}）`)
+      // success is only what the server actually persisted
+      if (r.savedProject) {
+        alert(`已写回项目（${r.savedProject.name}）`)
+      } else {
+        setError('服务器未返回保存结果，请重新预览后再试')
+      }
     } catch (e) {
+      syncSaveProblems(e)
       setError(e.message)
     } finally {
       setBusy(false)
@@ -218,6 +242,7 @@ export default function MergePage() {
           resolutions={resolutions}
           resolvedCount={resolvedCount}
           allResolved={!!allResolved}
+          canSave={canSave}
           setResolution={setResolution}
           exportResult={exportResult}
           saveName={saveName}
@@ -265,11 +290,12 @@ function DocSummary({ doc }) {
 }
 
 function MergeResult({
-  result, resolutions, resolvedCount, allResolved, setResolution,
+  result, resolutions, resolvedCount, allResolved, canSave, setResolution,
   exportResult, saveName, setSaveName, runMerge, bulkChoose,
   canWriteBack, writeBack, busy,
 }) {
   const { stats, conflicts, changes, document: merged } = result
+  const errorCount = result.errors?.length || 0
 
   const autoGroups = useMemo(() => {
     const groups = {}
@@ -298,7 +324,13 @@ function MergeResult({
             <strong>冲突</strong>
             <span>{conflicts.length} 项</span>
             <span>已裁决 {resolvedCount}</span>
-            <span>{allResolved ? '✓ 全部解决' : `待裁决 ${conflicts.length - resolvedCount}`}</span>
+            <span>
+              {allResolved
+                ? (errorCount
+                  ? `裁决有误 ${errorCount} 项`
+                  : '✓ 全部解决')
+                : `待裁决 ${conflicts.length - resolvedCount}`}
+            </span>
           </div>
         </div>
       </div>
@@ -376,6 +408,13 @@ function MergeResult({
             这些条目当前不会出现在合并文档中。
           </div>
         )}
+        {allResolved && errorCount > 0 && (
+          <div className="warn-box">
+            有 {errorCount} 项裁决未通过校验（见上方错误列表），对应条目
+            当前不会出现在合并文档中；修正裁决后会自动重新预览，全部有效
+            即可保存。
+          </div>
+        )}
         <div className="final-actions">
           <button className="btn" onClick={exportResult}>
             导出裁决结果 JSON
@@ -388,7 +427,7 @@ function MergeResult({
             />
             <button
               className="btn primary"
-              disabled={!allResolved || !saveName.trim() || busy}
+              disabled={!canSave || !saveName.trim() || busy}
               onClick={() => runMerge(true)}
             >
               全部裁决后另存为新项目
@@ -397,7 +436,7 @@ function MergeResult({
           {canWriteBack && (
             <button
               className="btn"
-              disabled={!allResolved || busy}
+              disabled={!canSave || busy}
               onClick={writeBack}
               title="以合并结果覆盖基准项目的当前文档"
             >
